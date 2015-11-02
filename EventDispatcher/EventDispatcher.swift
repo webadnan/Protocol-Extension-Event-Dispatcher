@@ -7,182 +7,85 @@
 //
 //  Example usage....
 //
-//    let stringChangeHandler = EventHandler(function: {
-//        (event: Event) in
-//        print("hello from string change handler!")
-//    })
+//    To Fire or dispatch:
+//    fire("tap", target: self)
 //
-//    let string = DispatchingValue("Hello")
-//    string.addEventListener(.change, handler: stringChangeHandler)
+//    To register:
+//    let unregister = childOfDispatcher.on("tap") {_ in 
+//        print("event dispatched")
+//    }
 //
-//    string.string = "Goodbye"
-//
-//    string.removeEventListener(.change, handler: stringChangeHandler)
-//
-//    string.string = "---"
+//    To unregister:
+//    unregister()
 
 import Foundation
 import UIKit
 
-protocol EventDispatcher: class
-{
-    func addEventListener(type: EventType, handler: EventHandler)
-    
-    func removeEventListener(type: EventType, handler: EventHandler)
-    
-    func dispatchEvent(event: Event)
+protocol TYEventDispatcher: class {
+    func on(type: String, handler: TYEventDispatcher -> Void) -> () -> Void
+    func fire(type: String, target: TYEventDispatcher)
+    func getEventLists() -> TYEventListeners
 }
 
-extension EventDispatcher
-{
-    func addEventListener(type: EventType, handler: EventHandler)
-    {
-        var eventListeners: EventListeners
+extension TYEventDispatcher {
+    func getEventLists() -> TYEventListeners {
+        if let el = objc_getAssociatedObject(self, &TYEventDispatcherKey.eventDispatcher) as? TYEventListeners {
+            return el
+        } else {
+            let eventListeners = TYEventListeners()
+            objc_setAssociatedObject(self,
+                &TYEventDispatcherKey.eventDispatcher,
+                eventListeners,
+                objc_AssociationPolicy.OBJC_ASSOCIATION_RETAIN)
+            return eventListeners
+        }
+    }
+    
+    func on(type: String, handler: TYEventDispatcher -> Void) -> () -> Void {
+        let eventLists = getEventLists()
         
-        if let el = objc_getAssociatedObject(self, &EventDispatcherKey.eventDispatcher) as? EventListeners
-        {
-            eventListeners = el
-            
-            if let _ = eventListeners.listeners[type]
-            {
-                eventListeners.listeners[type]?.insert(handler)
+        let tyEventHandler = TYEventHandler(callback: handler)
+        
+        if let _ = eventLists.listeners[type] {
+            eventLists.listeners[type]?.insert(tyEventHandler)
+        } else {
+            eventLists.listeners[type] = Set<TYEventHandler>([tyEventHandler])
+        }
+        
+        let unregister = { () -> Void in
+            eventLists.listeners[type]?.remove(tyEventHandler)
+        }
+        
+        return unregister
+    }
+    
+    func fire(type: String, target: TYEventDispatcher) {
+        let el = getEventLists()
+        if let handlers = el.listeners[type] {
+            for handler in handlers {
+                handler.callback(target)
             }
-            else
-            {
-                eventListeners.listeners[type] = Set<EventHandler>([handler])
-            }
-        }
-        else
-        {
-            eventListeners = EventListeners()
-            eventListeners.listeners[type] = Set<EventHandler>([handler])
-        }
-        
-        objc_setAssociatedObject(self,
-            &EventDispatcherKey.eventDispatcher,
-            eventListeners,
-            objc_AssociationPolicy.OBJC_ASSOCIATION_RETAIN)
-    }
-    
-    func removeEventListener(type: EventType, handler: EventHandler)
-    {
-        guard let eventListeners = objc_getAssociatedObject(self, &EventDispatcherKey.eventDispatcher) as? EventListeners,
-            _ = eventListeners.listeners[type]
-            else
-        {
-            // no handler for this object / event type
-            return
-        }
-        
-        eventListeners.listeners[type]?.remove(handler)
-        
-        objc_setAssociatedObject(self,
-            &EventDispatcherKey.eventDispatcher,
-            eventListeners,
-            objc_AssociationPolicy.OBJC_ASSOCIATION_RETAIN)
-    }
-    
-    func dispatchEvent(event: Event)
-    {
-        guard let eventListeners = objc_getAssociatedObject(self, &EventDispatcherKey.eventDispatcher) as? EventListeners,
-            handlers = eventListeners.listeners[event.type]
-            else
-        {
-            // no handler for this object / event type
-            return
-        }
-        
-        for handler in handlers
-        {
-            handler.function(event)
         }
     }
-    
 }
 
-// Required for objc_getAssociatedObject and objc_setAssociatedObject
-struct EventDispatcherKey
-{
-    static var eventDispatcher = "eventDispatcher"
-}
-
-// Because Swift functions are non-equatable, a wrapper to allow equivalence chenckiong to support remove event listener
-struct EventHandler: Hashable
-{
-    let function: Event -> Void
+struct TYEventHandler: Hashable {
+    let callback: TYEventDispatcher -> Void
     let id = NSUUID()
     
-    var hashValue: Int
-    {
-            return id.hashValue
+    var hashValue: Int {
+        return id.hashValue
     }
 }
 
-func == (lhs: EventHandler, rhs: EventHandler) -> Bool
-{
+func == (lhs: TYEventHandler, rhs: TYEventHandler) -> Bool{
     return lhs.id == rhs.id
 }
 
-class EventListeners
-{
-    var listeners: [EventType: Set<EventHandler>] = [:]
+class TYEventListeners {
+    var listeners: [String: Set<TYEventHandler>] = [:]
 }
 
-struct Event
-{
-    let type: EventType
-    let target: EventDispatcher
-}
-
-enum EventType: String
-{
-    case change
-    case tap
-}
-
-// Wrapper to make T dispatch a change event
-class DispatchingValue<T>: EventDispatcher
-{
-    required init(_ value: T)
-    {
-        self.value = value
-    }
-    
-    var value: T
-    {
-        didSet
-        {
-            dispatchEvent(Event(type: EventType.change, target: self))
-        }
-    }
-}
-
-// Extension to make UIControls implement EventDispatcher and dispatch a change event on UIControlEvents.ValueChanged
-extension UIControl: EventDispatcher
-{
-    override public func didMoveToSuperview()
-    {
-        super.didMoveToSuperview()
-        
-        addTarget(self, action: "changeHandler", forControlEvents: UIControlEvents.ValueChanged)
-        addTarget(self, action: "tapHandler", forControlEvents: UIControlEvents.TouchDown)
-    }
-    
-    override public func removeFromSuperview()
-    {
-        super.removeFromSuperview()
-        
-        removeTarget(self, action: "changeHandler", forControlEvents: UIControlEvents.ValueChanged)
-        removeTarget(self, action: "tapHandler", forControlEvents: UIControlEvents.TouchDown)
-    }
-    
-    func changeHandler()
-    {
-        dispatchEvent(Event(type: EventType.change, target: self))
-    }
-    
-    func tapHandler()
-    {
-        dispatchEvent(Event(type: EventType.tap, target: self))
-    }
+struct TYEventDispatcherKey {
+    static var eventDispatcher = "eventDispatcher"
 }
